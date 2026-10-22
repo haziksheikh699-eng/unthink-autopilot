@@ -1,51 +1,179 @@
 import os
 import time
+import random
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from google import genai
 from google.genai import types
 
-print("Starting UNTHINK AI Agent...", flush=True)
 
-# Read API key securely from GitHub Secrets
-api_key = os.environ.get("GEMINI_API_KEY")
+# ==========================================
+# UNTHINK AUTOPILOT
+# AI VIDEO IDEA GENERATOR
+# ==========================================
 
-if not api_key:
+print("Starting UNTHINK Autopilot...", flush=True)
+
+API_KEY = os.environ.get("GEMINI_API_KEY")
+
+if not API_KEY:
     raise RuntimeError(
-        "GEMINI_API_KEY is missing from GitHub Secrets."
+        "GEMINI_API_KEY is missing. "
+        "Add it to GitHub repository secrets."
     )
 
-# Connect to Gemini
-client = genai.Client(api_key=api_key)
+client = genai.Client(
+    api_key=API_KEY,
+    http_options=types.HttpOptions(
+        timeout=60000
+    )
+)
 
-print("Connected to Gemini API.", flush=True)
 
-# Discover available Gemini Flash models
-print("Checking available Gemini models...", flush=True)
+# ==========================================
+# RETRY SYSTEM
+# ==========================================
 
-available_models = []
+RETRYABLE_HTTP_CODES = {
+    429, 500, 502, 503, 504
+}
 
-for model in client.models.list():
-    name = model.name or ""
+RETRYABLE_CONNECTION_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.ConnectTimeout,
+)
 
-    if (
-        "gemini" in name.lower()
-        and "flash" in name.lower()
-        and "image" not in name.lower()
-        and "tts" not in name.lower()
-        and "embedding" not in name.lower()
-    ):
-        available_models.append(name)
 
-print("Available Flash models:", available_models, flush=True)
+def is_retryable(error):
+    code = getattr(error, "code", None)
+
+    try:
+        if int(code) in RETRYABLE_HTTP_CODES:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(error, RETRYABLE_CONNECTION_ERRORS):
+        return True
+
+    message = str(error).lower()
+
+    return any(
+        text in message
+        for text in (
+            "server disconnected",
+            "connection reset",
+            "temporarily unavailable",
+            "overloaded",
+            "remoteprotocolerror",
+        )
+    )
+
+
+def retry_call(function, description, attempts=3):
+
+    for attempt in range(1, attempts + 1):
+
+        try:
+            print(
+                f"{description}: "
+                f"attempt {attempt}/{attempts}",
+                flush=True
+            )
+
+            return function()
+
+        except Exception as error:
+
+            print(
+                f"Error: {type(error).__name__}: "
+                f"{error}",
+                flush=True
+            )
+
+            if not is_retryable(error):
+                raise
+
+            if attempt == attempts:
+                raise
+
+            delay = min(
+                10 * (2 ** (attempt - 1)),
+                40
+            ) + random.uniform(0, 3)
+
+            print(
+                f"Retrying in {delay:.1f} seconds...",
+                flush=True
+            )
+
+            time.sleep(delay)
+
+
+# ==========================================
+# DISCOVER GEMINI MODELS
+# ==========================================
+
+def discover_models():
+
+    models = []
+
+    for model in client.models.list():
+
+        name = model.name or ""
+
+        lower_name = name.lower()
+
+        if "gemini" not in lower_name:
+            continue
+
+        if "flash" not in lower_name:
+            continue
+
+        if any(
+            excluded in lower_name
+            for excluded in (
+                "image",
+                "tts",
+                "embedding",
+                "live",
+                "audio",
+            )
+        ):
+            continue
+
+        models.append(name)
+
+    return models
+
+
+available_models = retry_call(
+    discover_models,
+    "Discovering Gemini models"
+)
+
+print(
+    "Available Gemini Flash models:",
+    available_models,
+    flush=True
+)
 
 if not available_models:
     raise RuntimeError(
-        "No Gemini Flash models were found for this API key."
+        "No Gemini Flash models were returned "
+        "for this API key."
     )
 
-# Prefer newer Flash models
+
+# ==========================================
+# MODEL PRIORITY
+# ==========================================
+
 preferred_models = [
     "models/gemini-3.8-flash",
     "models/gemini-3.5-flash",
@@ -53,126 +181,187 @@ preferred_models = [
     "models/gemini-2.5-flash",
 ]
 
-selected_model = next(
-    (
-        name
-        for name in preferred_models
-        if name in available_models
-    ),
-    available_models[0]
+ordered_models = []
+
+for name in preferred_models:
+    if name in available_models:
+        ordered_models.append(name)
+
+for name in available_models:
+    if name not in ordered_models:
+        ordered_models.append(name)
+
+print(
+    "Model candidates:",
+    ordered_models,
+    flush=True
 )
 
-print(f"Selected model: {selected_model}", flush=True)
 
-# Prompt for UNTHINK
-prompt = """
-You are an expert YouTube strategist for UNTHINK.
+# ==========================================
+# UNTHINK CONTENT PROMPT
+# ==========================================
 
-UNTHINK creates stickman animation videos exploring:
+PROMPT = """
+You are the creative director of UNTHINK,
+a YouTube channel that makes stickman animations.
+
+The channel explores:
+
 - Psychology
 - Philosophy
 - Human behaviour
-- Overthinking
-- Relationships
 - Strange everyday experiences
+- Overthinking
+- Emotions
+- Relationships
+- Uncomfortable truths
 - Thought-provoking questions
 
-Generate 5 original YouTube video ideas.
+Generate FIVE original YouTube video ideas.
 
-Requirements:
+REQUIREMENTS:
+
 1. Create interesting, clickable titles.
-2. Avoid generic motivational content.
-3. Make each topic suitable for a 3-6 minute video.
-4. Include a short explanation for each idea.
-5. Include one simple stickman animation concept per idea.
-6. Use natural, human-sounding English.
+2. Avoid generic motivational topics.
+3. Use natural, human-sounding English.
+4. Make each idea suitable for a 3-6 minute video.
+5. Include a short explanation for each topic.
+6. Suggest one stickman animation concept.
 7. Avoid misleading scientific claims.
-8. Make the topics varied and thought-provoking.
+8. Make the ideas varied and distinctive.
 
-Format the response as a numbered list.
+OUTPUT FORMAT:
+
+IDEA 1
+Title:
+Explanation:
+Stickman visual:
+
+IDEA 2
+Title:
+Explanation:
+Stickman visual:
+
+Continue until IDEA 5.
 """
 
-# Generate ideas with automatic retries
-max_attempts = 5
+
+# ==========================================
+# GENERATE VIDEO IDEAS
+# ==========================================
+
+def generate_with_model(model_name):
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=PROMPT,
+        config=types.GenerateContentConfig(
+            temperature=0.9,
+            max_output_tokens=2500
+        )
+    )
+
+    if not response.text:
+        raise RuntimeError(
+            "Gemini returned an empty response."
+        )
+
+    return response.text
+
+
 ideas = None
+selected_model = None
+last_error = None
 
-for attempt in range(1, max_attempts + 1):
+for model_name in ordered_models:
+
+    print(
+        f"Trying model: {model_name}",
+        flush=True
+    )
+
     try:
-        print(
-            f"Generating ideas: attempt {attempt}/{max_attempts}",
-            flush=True
+        ideas = retry_call(
+            lambda: generate_with_model(model_name),
+            f"Generating ideas with {model_name}",
+            attempts=3
         )
 
-        response = client.models.generate_content(
-            model=selected_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.9,
-                max_output_tokens=2500,
-            ),
-        )
-
-        ideas = response.text
-
-        if not ideas or not ideas.strip():
-            raise RuntimeError(
-                "Gemini returned an empty response."
-            )
-
-        print("AI ideas generated successfully!", flush=True)
+        selected_model = model_name
         break
 
     except Exception as error:
-        error_message = str(error).lower()
 
-        print(
-            f"Attempt {attempt} failed: "
-            f"{type(error).__name__}: {error}",
-            flush=True
-        )
+        last_error = error
 
-        retryable = any(
-            word in error_message
-            for word in [
-                "503",
-                "unavailable",
-                "overloaded",
-                "500",
-                "502",
-                "504",
-                "429",
-                "resource_exhausted",
-            ]
-        )
+        code = getattr(error, "code", None)
 
-        if not retryable or attempt == max_attempts:
+        # Stop on authentication and permission errors.
+        if str(code) in ("401", "403"):
             raise
 
-        wait_seconds = min(15 * attempt, 60)
+        # Stop on quota errors to avoid bypassing
+        # project-level usage limits.
+        if str(code) == "429":
+            raise
 
-        print(
-            f"Waiting {wait_seconds} seconds before retry...",
-            flush=True
-        )
+        # Try another model for unavailable models
+        # or temporary service failures.
+        if str(code) in ("404", "500", "502", "503", "504"):
+            print(
+                "Trying another available model...",
+                flush=True
+            )
+            continue
 
-        time.sleep(wait_seconds)
+        if isinstance(
+            error,
+            RETRYABLE_CONNECTION_ERRORS
+        ):
+            print(
+                "Connection failed. Trying next model...",
+                flush=True
+            )
+            continue
 
-# Create output folder
-output_directory = Path("output")
-output_directory.mkdir(exist_ok=True)
+        raise
 
-# Prepare output file
+
+if not ideas:
+    raise RuntimeError(
+        "All compatible model attempts failed. "
+        f"Last error: {last_error}"
+    )
+
+
+# ==========================================
+# SAVE RESULTS
+# ==========================================
+
+output_dir = Path("output")
+output_dir.mkdir(exist_ok=True)
+
 today = datetime.now().strftime("%Y-%m-%d")
-output_file = output_directory / "video_ideas.md"
 
-# Save generated ideas
+output_file = output_dir / "video_ideas.md"
+
 output_file.write_text(
     "# UNTHINK AI Video Ideas\n\n"
     f"Generated on: {today}\n\n"
-    f"Model used: {selected_model}\n\n"
+    f"Model: {selected_model}\n\n"
     f"{ideas}\n",
     encoding="utf-8"
 )
 
-print(f"Saved generated ideas to: {output_file}", flush=True)
-print("UNTHINK AI Agent completed successfully!", flush=True)
+print(
+    f"SUCCESS! Saved: {output_file}",
+    flush=True
+)
+
+client.close()
+
+print(
+    "UNTHINK Autopilot completed successfully!",
+    flush=True
+)
