@@ -1,0 +1,32 @@
+
+name: UNTHINK Autopilot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run UNTHINK Agent
+        run: python agent.py
+
+      - name: Save generated ideas
+        uses: actions/upload-artifact@v4
+        with:
+          name: unthink-video-ideas
+          path: output/video_ideas.md
