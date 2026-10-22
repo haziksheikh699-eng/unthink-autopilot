@@ -1,32 +1,27 @@
 
-name: UNTHINK Autopilot
+from datetime import datetime
+from pathlib import Path
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 5 * * 1"
+print("Starting UNTHINK AI Agent...")
 
-permissions:
-  contents: read
+topics = [
+    "Why intelligent people overthink everything",
+    "The psychology of being alone",
+    "Why we remember embarrassing moments",
+    "Why time feels faster as we grow older",
+    "The hidden psychology of overthinking"
+]
 
-jobs:
-  run-agent:
-    runs-on: ubuntu-latest
+Path("output").mkdir(exist_ok=True)
 
-    steps:
-      - name: Download repository
-        uses: actions/checkout@v4
+today = datetime.now().strftime("%Y-%m-%d")
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+with open("output/video_ideas.md", "w", encoding="utf-8") as file:
+    file.write("# UNTHINK Video Ideas\n\n")
+    file.write(f"Generated on: {today}\n\n")
 
-      - name: Run UNTHINK Agent
-        run: python agent.py
+    for i, topic in enumerate(topics, 1):
+        file.write(f"{i}. {topic}\n")
+        print(f"Topic {i}: {topic}")
 
-      - name: Save generated ideas
-        uses: actions/upload-artifact@v4
-        with:
-          name: unthink-video-ideas
-          path: output/video_ideas.md
+print("UNTHINK Agent completed successfully!")
