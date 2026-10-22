@@ -22,7 +22,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run UNTHINK Agent
+      - name: Generate AI video ideas
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python agent.py
 
       - name: Save generated ideas
@@ -30,3 +32,4 @@ jobs:
         with:
           name: unthink-video-ideas
           path: output/video_ideas.md
+          if-no-files-found: error
