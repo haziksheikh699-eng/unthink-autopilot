@@ -1,159 +1,192 @@
-
-import json
 import os
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
+
+from google import genai
+from google.genai import types
 
 print("Starting UNTHINK AI Agent...")
 
-# Read Gemini API key from GitHub Secrets
+# Get API key securely from GitHub Secrets
 api_key = os.environ.get("GEMINI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("GEMINI_API_KEY is missing.")
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing from GitHub Secrets."
+    )
 
-# Instructions for Gemini
+client = genai.Client(api_key=api_key)
+
+# Find available models
+print("Checking available Gemini models...")
+
+available_models = []
+
+for model in client.models.list():
+    name = model.name or ""
+
+    actions = (
+        model.supported_actions
+        if hasattr(model, "supported_actions")
+        else []
+    ) or []
+
+    if (
+        "gemini" in name.lower()
+        and "generateContent" in actions
+    ):
+        available_models.append(name)
+
+print("Available generation models:", available_models)
+
+if not available_models:
+    raise RuntimeError(
+        "No compatible Gemini generation models found."
+    )
+
+# Prefer lightweight Flash models
+preferred_models = [
+    "models/gemini-3.5-flash",
+    "models/gemini-3-flash",
+    "models/gemini-2.5-flash",
+    "models/gemini-2.0-flash",
+]
+
+selected_model = next(
+    (
+        model
+        for model in preferred_models
+        if model in available_models
+    ),
+    None
+)
+
+if selected_model is None:
+    flash_models = [
+        model
+        for model in available_models
+        if "flash" in model.lower()
+        and "image" not in model.lower()
+        and "tts" not in model.lower()
+    ]
+
+    if not flash_models:
+        raise RuntimeError(
+            "No compatible Gemini Flash text model found."
+        )
+
+    selected_model = flash_models[0]
+
+print(f"Selected model: {selected_model}")
+
+# UNTHINK video ideas prompt
 prompt = """
 You are a creative YouTube strategist for UNTHINK.
 
-UNTHINK is a YouTube channel creating stickman animation
-videos about psychology, philosophy, human behaviour,
-overthinking, emotions, relationships, and unusual ideas.
+UNTHINK creates stickman animation videos about:
+- Psychology
+- Philosophy
+- Human behaviour
+- Overthinking
+- Relationships
+- Strange everyday experiences
+- Thought-provoking questions
 
-Generate 5 original and engaging YouTube video ideas.
+Generate 5 original YouTube video ideas.
 
 Requirements:
 1. Make the topics interesting and clickable.
 2. Avoid generic motivational content.
-3. Focus on psychology, philosophy and human behaviour.
-4. Make each idea suitable for a 3-6 minute animation.
-5. Use natural, human-sounding English.
-6. Include a catchy title and a short explanation.
+3. Each idea should work as a 3-6 minute animation.
+4. Include a catchy title.
+5. Include a short explanation.
+6. Use natural, human-sounding English.
 7. Avoid misleading scientific claims.
-8. Make the ideas visually interesting for stickman animation.
+8. Suggest one simple stickman visual for each idea.
 
 Format the response as a numbered list.
 """
 
-# Gemini API endpoint
-url = (
-    "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-3.5-flash:generateContent"
-)
-
-payload = {
-    "contents": [
-        {
-            "parts": [
-                {"text": prompt}
-            ]
-        }
-    ],
-    "generationConfig": {
-        "temperature": 0.9,
-        "maxOutputTokens": 1800
-    }
-}
-
-request = Request(
-    url,
-    data=json.dumps(payload).encode("utf-8"),
-    headers={
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key
-    },
-    method="POST"
-)
-
-# Automatically retry temporary API failures
-max_attempts = 5
+# Generate ideas with retries
+max_attempts = 4
 
 for attempt in range(1, max_attempts + 1):
+
     try:
         print(
-            f"Contacting Gemini: attempt "
+            f"Generating ideas: attempt "
             f"{attempt}/{max_attempts}"
         )
 
-        with urlopen(request, timeout=60) as response:
-            result = json.load(response)
-
-        print("Gemini responded successfully!")
-        break
-
-    except HTTPError as error:
-        details = error.read().decode(
-            "utf-8", errors="replace"
+        response = client.models.generate_content(
+            model=selected_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.9,
+                max_output_tokens=2500,
+            ),
         )
 
-        if (
-            error.code in (429, 500, 502, 503, 504)
-            and attempt < max_attempts
-        ):
-            wait_seconds = min(
-                10 * (2 ** (attempt - 1)), 80
+        ideas = response.text
+
+        if not ideas or not ideas.strip():
+            raise RuntimeError(
+                "Gemini returned an empty response."
             )
 
-            print(
-                f"Gemini returned HTTP {error.code}. "
-                f"Retrying in {wait_seconds} seconds..."
-            )
+        print("Video ideas generated successfully!")
+        break
 
-            time.sleep(wait_seconds)
-            continue
+    except Exception as error:
 
-        raise RuntimeError(
-            f"Gemini API returned HTTP {error.code}: "
-            f"{details}"
-        ) from None
+        error_message = str(error)
 
-    except URLError as error:
-        if attempt < max_attempts:
-            print(
-                "Connection problem. "
-                "Retrying in 10 seconds..."
-            )
-            time.sleep(10)
-            continue
+        print(
+            f"Attempt {attempt} failed: "
+            f"{type(error).__name__}: {error_message}"
+        )
 
-        raise RuntimeError(
-            f"Could not connect to Gemini: {error.reason}"
-        ) from None
+        retryable = any(
+            code in error_message.lower()
+            for code in [
+                "503",
+                "unavailable",
+                "overloaded",
+                "500",
+                "502",
+                "504",
+                "429",
+                "resource_exhausted",
+            ]
+        )
 
-# Extract Gemini's response
-try:
-    parts = result["candidates"][0]["content"]["parts"]
-    ideas = "\n".join(
-        part["text"]
-        for part in parts
-        if "text" in part
-    )
+        if not retryable or attempt == max_attempts:
+            raise
 
-    if not ideas.strip():
-        raise ValueError("Empty response")
+        wait_seconds = 15 * attempt
 
-except (KeyError, IndexError, TypeError, ValueError):
-    raise RuntimeError(
-        "Gemini did not return usable text."
-    ) from None
+        print(
+            f"Waiting {wait_seconds} seconds..."
+        )
 
-# Create output directory
-Path("output").mkdir(exist_ok=True)
+        time.sleep(wait_seconds)
+
+# Save generated ideas
+output_directory = Path("output")
+output_directory.mkdir(exist_ok=True)
 
 today = datetime.now().strftime("%Y-%m-%d")
 
-# Save AI-generated ideas
-output_file = Path("output/video_ideas.md")
+output_file = output_directory / "video_ideas.md"
 
 output_file.write_text(
-    f"# UNTHINK AI Video Ideas\n\n"
+    "# UNTHINK AI Video Ideas\n\n"
     f"Generated on: {today}\n\n"
+    f"Model used: {selected_model}\n\n"
     f"{ideas}\n",
-    encoding="utf-8"
+    encoding="utf-8",
 )
 
+print(f"Saved: {output_file}")
 print("UNTHINK AI Agent completed successfully!")
-print(f"Generated ideas saved to: {output_file}")
